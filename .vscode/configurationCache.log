@@ -1,0 +1,1 @@
+{"buildTargets":["build-all","clean","container","devmode","go-deps","make","test"],"launchTargets":[],"customConfigurationProvider":{"workspaceBrowse":{"browsePath":[],"compilerArgs":[]},"fileIndex":[]}}

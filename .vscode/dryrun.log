@@ -1,0 +1,8 @@
+fatal: No names found, cannot describe anything.
+
+make: Entering directory `/Users/bhoward/src/kubevirt-hook'
+cd cmd/ && env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+		go build -ldflags "-w -X main.version=~de86e67 -X 'ddn.com/perms/pkg/kube.ddnModelVersion=2020-04-14.de86e67' -X main.developmentMode=1" -mod vendor -v -o /Users/bhoward/src/kubevirt-hook/bin/perms-darwin-arm64;
+if [ "darwin" == "linux" ]; then mv /Users/bhoward/src/kubevirt-hook/bin/perms-darwin-arm64 /Users/bhoward/src/kubevirt-hook/bin/perms-arm64; fi
+make: Leaving directory `/Users/bhoward/src/kubevirt-hook'
+ 
