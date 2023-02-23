@@ -31,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	v1 "kubevirt.io/api/core/v1"
+	v1 "kubevirt.io/client-go/apis/core/v1"
 	"kubevirt.io/client-go/log"
 	cloudinit "kubevirt.io/kubevirt/pkg/cloud-init"
 	hooksInfo "kubevirt.io/kubevirt/pkg/hooks/info"
@@ -40,8 +40,6 @@ import (
 	grpcutil "kubevirt.io/kubevirt/pkg/util/net/grpc"
 	virtwrapApi "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/api"
 )
-
-const dialSockErr = "Failed to Dial hook socket: %s"
 
 type callBackClient struct {
 	SocketPath           string
@@ -131,7 +129,7 @@ func (m *Manager) collectSideCarSockets(numberOfRequestedHookSidecars uint, time
 func processSideCarSocket(socketPath string) (*callBackClient, bool, error) {
 	conn, err := grpcutil.DialSocketWithTimeout(socketPath, 1)
 	if err != nil {
-		log.Log.Reason(err).Infof(dialSockErr, socketPath)
+		log.Log.Reason(err).Infof("Failed to Dial hook socket: %s", socketPath)
 		return nil, true, nil
 	}
 	defer conn.Close()
@@ -187,64 +185,52 @@ func (m *Manager) OnDefineDomain(domainSpec *virtwrapApi.DomainSpec, vmi *v1.Vir
 	if err != nil {
 		return "", fmt.Errorf("Failed to marshal domain spec: %v", domainSpec)
 	}
+	if callbacks, found := m.CallbacksPerHookPoint[hooksInfo.OnDefineDomainHookPointName]; found {
+		for _, callback := range callbacks {
+			if callback.Version == hooksV1alpha1.Version || callback.Version == hooksV1alpha2.Version {
+				vmiJSON, err := json.Marshal(vmi)
+				if err != nil {
+					return "", fmt.Errorf("Failed to marshal VMI spec: %v", vmi)
+				}
 
-	callbacks, found := m.CallbacksPerHookPoint[hooksInfo.OnDefineDomainHookPointName]
-	if !found {
-		return string(domainSpecXML), nil
-	}
+				conn, err := grpcutil.DialSocketWithTimeout(callback.SocketPath, 1)
+				if err != nil {
+					log.Log.Reason(err).Infof("Failed to Dial hook socket: %s", callback.SocketPath)
+					return "", err
+				}
+				defer conn.Close()
 
-	vmiJSON, err := json.Marshal(vmi)
-	if err != nil {
-		return "", fmt.Errorf("Failed to marshal VMI spec: %v", vmi)
-	}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
 
-	for _, callback := range callbacks {
-		domainSpecXML, err = m.onDefineDomainCallback(callback, domainSpecXML, vmiJSON)
-		if err != nil {
-			return "", err
+				switch callback.Version {
+				case hooksV1alpha1.Version:
+					client := hooksV1alpha1.NewCallbacksClient(conn)
+					result, err := client.OnDefineDomain(ctx, &hooksV1alpha1.OnDefineDomainParams{
+						DomainXML: domainSpecXML,
+						Vmi:       vmiJSON,
+					})
+					if err != nil {
+						return "", err
+					}
+					domainSpecXML = result.GetDomainXML()
+				case hooksV1alpha2.Version:
+					client := hooksV1alpha2.NewCallbacksClient(conn)
+					result, err := client.OnDefineDomain(ctx, &hooksV1alpha2.OnDefineDomainParams{
+						DomainXML: domainSpecXML,
+						Vmi:       vmiJSON,
+					})
+					if err != nil {
+						return "", err
+					}
+					domainSpecXML = result.GetDomainXML()
+				default:
+					panic("Should never happen, version compatibility check is done during Info call")
+				}
+			}
 		}
 	}
-
 	return string(domainSpecXML), nil
-}
-
-func (m *Manager) onDefineDomainCallback(callback *callBackClient, domainSpecXML, vmiJSON []byte) ([]byte, error) {
-	conn, err := grpcutil.DialSocketWithTimeout(callback.SocketPath, 1)
-	if err != nil {
-		log.Log.Reason(err).Infof(dialSockErr, callback.SocketPath)
-		return nil, err
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-
-	switch callback.Version {
-	case hooksV1alpha1.Version:
-		client := hooksV1alpha1.NewCallbacksClient(conn)
-		result, err := client.OnDefineDomain(ctx, &hooksV1alpha1.OnDefineDomainParams{
-			DomainXML: domainSpecXML,
-			Vmi:       vmiJSON,
-		})
-		if err != nil {
-			return nil, err
-		}
-		domainSpecXML = result.GetDomainXML()
-	case hooksV1alpha2.Version:
-		client := hooksV1alpha2.NewCallbacksClient(conn)
-		result, err := client.OnDefineDomain(ctx, &hooksV1alpha2.OnDefineDomainParams{
-			DomainXML: domainSpecXML,
-			Vmi:       vmiJSON,
-		})
-		if err != nil {
-			return nil, err
-		}
-		domainSpecXML = result.GetDomainXML()
-	default:
-		log.Log.Errorf("Unsupported callback version: %s", callback.Version)
-	}
-
-	return domainSpecXML, nil
 }
 
 func (m *Manager) PreCloudInitIso(vmi *v1.VirtualMachineInstance, cloudInitData *cloudinit.CloudInitData) (*cloudinit.CloudInitData, error) {
@@ -254,7 +240,7 @@ func (m *Manager) PreCloudInitIso(vmi *v1.VirtualMachineInstance, cloudInitData 
 				var resultData *cloudinit.CloudInitData
 				vmiJSON, err := json.Marshal(vmi)
 				if err != nil {
-					return cloudInitData, fmt.Errorf("failed to marshal VMI spec: %v, err: %v", vmi, err)
+					return cloudInitData, fmt.Errorf("Failed to marshal VMI spec: %v", vmi)
 				}
 
 				// To be backward compatible to sidecar hooks still expecting to receive the cloudinit data as a CloudInitNoCloudSource object,
@@ -265,17 +251,17 @@ func (m *Manager) PreCloudInitIso(vmi *v1.VirtualMachineInstance, cloudInitData 
 				}
 				cloudInitNoCloudSourceJSON, err := json.Marshal(cloudInitNoCloudSource)
 				if err != nil {
-					return cloudInitData, fmt.Errorf("failed to marshal CloudInitNoCloudSource: %v, err: %v", cloudInitNoCloudSource, err)
+					return cloudInitData, fmt.Errorf("Failed to marshal CloudInitNoCloudSource: %v", cloudInitNoCloudSource)
 				}
 
 				cloudInitDataJSON, err := json.Marshal(cloudInitData)
 				if err != nil {
-					return cloudInitData, fmt.Errorf("failed to marshal CloudInitData: %v, err: %v", cloudInitData, err)
+					return cloudInitData, fmt.Errorf("Failed to marshal CloudInitData: %v", cloudInitData)
 				}
 
 				conn, err := grpcutil.DialSocketWithTimeout(callback.SocketPath, 1)
 				if err != nil {
-					log.Log.Reason(err).Errorf(dialSockErr, callback.SocketPath)
+					log.Log.Reason(err).Infof("Failed to Dial hook socket: %s", callback.SocketPath)
 					return cloudInitData, err
 				}
 				defer conn.Close()
@@ -289,13 +275,12 @@ func (m *Manager) PreCloudInitIso(vmi *v1.VirtualMachineInstance, cloudInitData 
 					Vmi:                    vmiJSON,
 				})
 				if err != nil {
-					log.Log.Reason(err).Error("Failed to call PreCloudInitIso")
 					return cloudInitData, err
 				}
 
 				err = json.Unmarshal(result.GetCloudInitData(), &resultData)
 				if err != nil {
-					log.Log.Reason(err).Error("Failed to unmarshal CloudInitData result")
+					log.Log.Reason(err).Infof("Failed to unmarshal CloudInitData result")
 					return cloudInitData, err
 				}
 				if !cloudinit.IsValidCloudInitData(resultData) {
@@ -303,7 +288,7 @@ func (m *Manager) PreCloudInitIso(vmi *v1.VirtualMachineInstance, cloudInitData 
 					var resultNoCloudSourceData *v1.CloudInitNoCloudSource
 					err = json.Unmarshal(result.GetCloudInitNoCloudSource(), &resultNoCloudSourceData)
 					if err != nil {
-						log.Log.Reason(err).Error("Failed to unmarshal CloudInitNoCloudSource result")
+						log.Log.Reason(err).Infof("Failed to unmarshal CloudInitNoCloudSource result")
 						return cloudInitData, err
 					}
 					resultData = &cloudinit.CloudInitData{
