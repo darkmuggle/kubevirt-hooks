@@ -31,9 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
-	v1 "kubevirt.io/api/core/v1"
+	v1 "kubevirt.io/client-go/apis/core/v1"
 	"kubevirt.io/client-go/precond"
-	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 )
 
 // For versioning of the virt-handler and -launcher communication,
@@ -132,6 +131,7 @@ type GuestOSInfo struct {
 }
 
 type InterfaceStatus struct {
+	Name          string
 	Mac           string
 	Ip            string
 	IPs           []string
@@ -179,27 +179,26 @@ type DomainList struct {
 // tagged, and they must correspond to the libvirt domain as described in
 // https://libvirt.org/formatdomain.html.
 type DomainSpec struct {
-	XMLName        xml.Name        `xml:"domain"`
-	Type           string          `xml:"type,attr"`
-	XmlNS          string          `xml:"xmlns:qemu,attr,omitempty"`
-	Name           string          `xml:"name"`
-	UUID           string          `xml:"uuid,omitempty"`
-	Memory         Memory          `xml:"memory"`
-	MemoryBacking  *MemoryBacking  `xml:"memoryBacking,omitempty"`
-	OS             OS              `xml:"os"`
-	SysInfo        *SysInfo        `xml:"sysinfo,omitempty"`
-	Devices        Devices         `xml:"devices"`
-	Clock          *Clock          `xml:"clock,omitempty"`
-	Resource       *Resource       `xml:"resource,omitempty"`
-	QEMUCmd        *Commandline    `xml:"qemu:commandline,omitempty"`
-	Metadata       Metadata        `xml:"metadata,omitempty"`
-	Features       *Features       `xml:"features,omitempty"`
-	CPU            CPU             `xml:"cpu"`
-	VCPU           *VCPU           `xml:"vcpu"`
-	CPUTune        *CPUTune        `xml:"cputune"`
-	NUMATune       *NUMATune       `xml:"numatune"`
-	IOThreads      *IOThreads      `xml:"iothreads,omitempty"`
-	LaunchSecurity *LaunchSecurity `xml:"launchSecurity,omitempty"`
+	XMLName       xml.Name       `xml:"domain"`
+	Type          string         `xml:"type,attr"`
+	XmlNS         string         `xml:"xmlns:qemu,attr,omitempty"`
+	Name          string         `xml:"name"`
+	UUID          string         `xml:"uuid,omitempty"`
+	Memory        Memory         `xml:"memory"`
+	MemoryBacking *MemoryBacking `xml:"memoryBacking,omitempty"`
+	OS            OS             `xml:"os"`
+	SysInfo       *SysInfo       `xml:"sysinfo,omitempty"`
+	Devices       Devices        `xml:"devices"`
+	Clock         *Clock         `xml:"clock,omitempty"`
+	Resource      *Resource      `xml:"resource,omitempty"`
+	QEMUCmd       *Commandline   `xml:"qemu:commandline,omitempty"`
+	Metadata      Metadata       `xml:"metadata,omitempty"`
+	Features      *Features      `xml:"features,omitempty"`
+	CPU           CPU            `xml:"cpu"`
+	VCPU          *VCPU          `xml:"vcpu"`
+	CPUTune       *CPUTune       `xml:"cputune"`
+	NUMATune      *NUMATune      `xml:"numatune"`
+	IOThreads     *IOThreads     `xml:"iothreads,omitempty"`
 }
 
 type CPUTune struct {
@@ -330,15 +329,12 @@ type FeatureVendorID struct {
 type FeatureEnabled struct {
 }
 
-type Shareable struct{}
-
 type FeatureState struct {
 	State string `xml:"state,attr,omitempty"`
 }
 
 type FeatureKVM struct {
-	Hidden        *FeatureState `xml:"hidden,omitempty"`
-	HintDedicated *FeatureState `xml:"hint-dedicated,omitempty"`
+	Hidden *FeatureState `xml:"hidden,omitempty"`
 }
 
 type Metadata struct {
@@ -352,21 +348,11 @@ type KubeVirtMetadata struct {
 	GracePeriod      *GracePeriodMetadata      `xml:"graceperiod,omitempty"`
 	Migration        *MigrationMetadata        `xml:"migration,omitempty"`
 	AccessCredential *AccessCredentialMetadata `xml:"accessCredential,omitempty"`
-	MemoryDump       *MemoryDumpMetadata       `xml:"memoryDump,omitempty"`
 }
 
 type AccessCredentialMetadata struct {
 	Succeeded bool   `xml:"succeeded,omitempty"`
 	Message   string `xml:"message,omitempty"`
-}
-
-type MemoryDumpMetadata struct {
-	FileName       string       `xml:"fileName,omitempty"`
-	StartTimestamp *metav1.Time `xml:"startTimestamp,omitempty"`
-	EndTimestamp   *metav1.Time `xml:"endTimestamp,omitempty"`
-	Completed      bool         `xml:"completed,omitempty"`
-	Failed         bool         `xml:"failed,omitempty"`
-	FailureReason  string       `xml:"failureReason,omitempty"`
 }
 
 type MigrationMetadata struct {
@@ -468,18 +454,6 @@ type Devices struct {
 	Rng         *Rng               `xml:"rng,omitempty"`
 	Filesystems []FilesystemDevice `xml:"filesystem,omitempty"`
 	Redirs      []RedirectedDevice `xml:"redirdev,omitempty"`
-	SoundCards  []SoundCard        `xml:"sound,omitempty"`
-	TPMs        []TPM              `xml:"tpm,omitempty"`
-}
-
-type TPM struct {
-	Model   string     `xml:"model,attr"`
-	Backend TPMBackend `xml:"backend"`
-}
-
-type TPMBackend struct {
-	Type    string `xml:"type,attr"`
-	Version string `xml:"version,attr"`
 }
 
 // RedirectedDevice describes a device to be redirected
@@ -538,7 +512,7 @@ type Input struct {
 	Type    string   `xml:"type,attr"`
 	Bus     string   `xml:"bus,attr"`
 	Alias   *Alias   `xml:"alias,omitempty"`
-	Address *Address `xml:"address,omitempty"`
+	Address *Address `xml:"address,emitempty"`
 	Model   string   `xml:"model,attr,omitempty"`
 }
 
@@ -551,10 +525,8 @@ type HostDevice struct {
 	Managed   string           `xml:"managed,attr"`
 	Mode      string           `xml:"mode,attr,omitempty"`
 	Model     string           `xml:"model,attr,omitempty"`
-	Address   *Address         `xml:"address,omitempty"`
+	Address   *Address         `xml:"address,emitempty"`
 	Alias     *Alias           `xml:"alias,omitempty"`
-	Display   string           `xml:"display,attr,omitempty"`
-	RamFB     string           `xml:"ramfb,attr,omitempty"`
 }
 
 type HostDeviceSource struct {
@@ -572,16 +544,15 @@ type Controller struct {
 	Model   string            `xml:"model,attr,omitempty"`
 	Driver  *ControllerDriver `xml:"driver,omitempty"`
 	Alias   *Alias            `xml:"alias,omitempty"`
-	Address *Address          `xml:"address,omitempty"`
+	Address *Address          `xml:"address,emitempty"`
 }
 
 // END Controller -----------------------------
 
 // BEGIN ControllerDriver
 type ControllerDriver struct {
-	IOThread *uint  `xml:"iothread,attr,omitempty"`
-	Queues   *uint  `xml:"queues,attr,omitempty"`
-	IOMMU    string `xml:"iommu,attr,omitempty"`
+	IOThread *uint `xml:"iothread,attr,omitempty"`
+	Queues   *uint `xml:"queues,attr,omitempty"`
 }
 
 // END ControllerDriver
@@ -589,25 +560,21 @@ type ControllerDriver struct {
 // BEGIN Disk -----------------------------
 
 type Disk struct {
-	Device             string         `xml:"device,attr"`
-	Snapshot           string         `xml:"snapshot,attr,omitempty"`
-	Type               string         `xml:"type,attr"`
-	Source             DiskSource     `xml:"source"`
-	Target             DiskTarget     `xml:"target"`
-	Serial             string         `xml:"serial,omitempty"`
-	Driver             *DiskDriver    `xml:"driver,omitempty"`
-	ReadOnly           *ReadOnly      `xml:"readonly,omitempty"`
-	Auth               *DiskAuth      `xml:"auth,omitempty"`
-	Alias              *Alias         `xml:"alias,omitempty"`
-	BackingStore       *BackingStore  `xml:"backingStore,omitempty"`
-	BootOrder          *BootOrder     `xml:"boot,omitempty"`
-	Address            *Address       `xml:"address,omitempty"`
-	Model              string         `xml:"model,attr,omitempty"`
-	BlockIO            *BlockIO       `xml:"blockio,omitempty"`
-	FilesystemOverhead *cdiv1.Percent `xml:"filesystemOverhead,omitempty"`
-	Capacity           *int64         `xml:"capacity,omitempty"`
-	ExpandDisksEnabled bool           `xml:"expandDisksEnabled,omitempty"`
-	Shareable          *Shareable     `xml:"shareable,omitempty"`
+	Device       string        `xml:"device,attr"`
+	Snapshot     string        `xml:"snapshot,attr,omitempty"`
+	Type         string        `xml:"type,attr"`
+	Source       DiskSource    `xml:"source"`
+	Target       DiskTarget    `xml:"target"`
+	Serial       string        `xml:"serial,omitempty"`
+	Driver       *DiskDriver   `xml:"driver,omitempty"`
+	ReadOnly     *ReadOnly     `xml:"readonly,omitempty"`
+	Auth         *DiskAuth     `xml:"auth,omitempty"`
+	Alias        *Alias        `xml:"alias,omitempty"`
+	BackingStore *BackingStore `xml:"backingStore,omitempty"`
+	BootOrder    *BootOrder    `xml:"boot,omitempty"`
+	Address      *Address      `xml:"address,omitempty"`
+	Model        string        `xml:"model,attr,omitempty"`
+	BlockIO      *BlockIO      `xml:"blockio,omitempty"`
 }
 
 type DiskAuth struct {
@@ -633,9 +600,9 @@ type DiskSource struct {
 }
 
 type DiskTarget struct {
-	Bus    v1.DiskBus `xml:"bus,attr,omitempty"`
-	Device string     `xml:"dev,attr,omitempty"`
-	Tray   string     `xml:"tray,attr,omitempty"`
+	Bus    string `xml:"bus,attr,omitempty"`
+	Device string `xml:"dev,attr,omitempty"`
+	Tray   string `xml:"tray,attr,omitempty"`
 }
 
 type DiskDriver struct {
@@ -647,7 +614,6 @@ type DiskDriver struct {
 	IOThread    *uint       `xml:"iothread,attr,omitempty"`
 	Queues      *uint       `xml:"queues,attr,omitempty"`
 	Discard     string      `xml:"discard,attr,omitempty"`
-	IOMMU       string      `xml:"iommu,attr,omitempty"`
 }
 
 type DiskSourceHost struct {
@@ -736,7 +702,6 @@ type Interface struct {
 type InterfaceDriver struct {
 	Name   string `xml:"name,attr"`
 	Queues *uint  `xml:"queues,attr,omitempty"`
-	IOMMU  string `xml:"iommu,attr,omitempty"`
 }
 
 type LinkState struct {
@@ -908,16 +873,7 @@ type Entry struct {
 }
 
 //END OS --------------------
-//BEGIN LaunchSecurity --------------------
 
-type LaunchSecurity struct {
-	Type            string `xml:"type,attr"`
-	Cbitpos         string `xml:"cbitpos,omitempty"`
-	ReducedPhysBits string `xml:"reducedPhysBits,omitempty"`
-	Policy          string `xml:"policy,omitempty"`
-}
-
-//END LaunchSecurity --------------------
 //BEGIN Clock --------------------
 
 type Clock struct {
@@ -960,15 +916,6 @@ type ChannelSource struct {
 
 //END Channel --------------------
 
-//BEGIN Sound -------------------
-
-type SoundCard struct {
-	Alias *Alias `xml:"alias,omitempty"`
-	Model string `xml:"model,attr"`
-}
-
-//END Sound -------------------
-
 //BEGIN Video -------------------
 
 type Video struct {
@@ -984,7 +931,7 @@ type VideoModel struct {
 }
 
 type Graphics struct {
-	AutoPort      string          `xml:"autoport,attr,omitempty"`
+	AutoPort      string          `xml:"autoPort,attr,omitempty"`
 	DefaultMode   string          `xml:"defaultMode,attr,omitempty"`
 	Listen        *GraphicsListen `xml:"listen,omitempty"`
 	PasswdValidTo string          `xml:"passwdValidTo,attr,omitempty"`
@@ -1019,21 +966,16 @@ type Stats struct {
 }
 
 type MemBalloon struct {
-	Model   string            `xml:"model,attr"`
-	Stats   *Stats            `xml:"stats,omitempty"`
-	Address *Address          `xml:"address,omitempty"`
-	Driver  *MemBalloonDriver `xml:"driver,omitempty"`
-}
-
-type MemBalloonDriver struct {
-	IOMMU string `xml:"iommu,attr,omitempty"`
+	Model   string   `xml:"model,attr"`
+	Stats   *Stats   `xml:"stats,omitempty"`
+	Address *Address `xml:"address,emitempty"`
 }
 
 type Watchdog struct {
 	Model   string   `xml:"model,attr"`
 	Action  string   `xml:"action,attr"`
 	Alias   *Alias   `xml:"alias,omitempty"`
-	Address *Address `xml:"address,omitempty"`
+	Address *Address `xml:"address,emitempty"`
 }
 
 // Rng represents the source of entropy from host to VM
@@ -1042,12 +984,7 @@ type Rng struct {
 	Model string `xml:"model,attr"`
 	// Backend specifies the source of entropy to be used
 	Backend *RngBackend `xml:"backend,omitempty"`
-	Address *Address    `xml:"address,omitempty"`
-	Driver  *RngDriver  `xml:"driver,omitempty"`
-}
-
-type RngDriver struct {
-	IOMMU string `xml:"iommu,attr,omitempty"`
+	Address *Address    `xml:"address,emitempty"`
 }
 
 // RngRate sets the limiting factor how to read from entropy source
