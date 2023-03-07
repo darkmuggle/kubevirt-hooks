@@ -31,17 +31,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pborman/uuid"
-
-	v1 "kubevirt.io/api/core/v1"
+	v1 "kubevirt.io/client-go/apis/core/v1"
 	"kubevirt.io/client-go/log"
 	"kubevirt.io/client-go/precond"
 	diskutils "kubevirt.io/kubevirt/pkg/ephemeral-disk-utils"
 	"kubevirt.io/kubevirt/pkg/util"
 	"kubevirt.io/kubevirt/pkg/util/net/dns"
 )
-
-const isoStagingFmt = "%s.staging"
 
 type IsoCreationFunc func(isoOutFile, volumeID string, inDir string) error
 
@@ -61,7 +57,6 @@ const (
 	DataSourceNoCloud     DataSourceType     = "noCloud"
 	DataSourceConfigDrive DataSourceType     = "configDrive"
 	NICMetadataType       DeviceMetadataType = "nic"
-	HostDevMetadataType   DeviceMetadataType = "hostdev"
 )
 
 // CloudInitData is a data source independent struct that
@@ -81,13 +76,11 @@ type PublicSSHKey struct {
 }
 
 type NoCloudMetadata struct {
-	InstanceType  string `json:"instance-type,omitempty"`
 	InstanceID    string `json:"instance-id"`
 	LocalHostname string `json:"local-hostname,omitempty"`
 }
 
 type ConfigDriveMetadata struct {
-	InstanceType  string            `json:"instance_type,omitempty"`
 	InstanceID    string            `json:"instance_id"`
 	LocalHostname string            `json:"local_hostname,omitempty"`
 	Hostname      string            `json:"hostname,omitempty"`
@@ -97,14 +90,12 @@ type ConfigDriveMetadata struct {
 }
 
 type DeviceData struct {
-	Type        DeviceMetadataType `json:"type"`
-	Bus         string             `json:"bus"`
-	Address     string             `json:"address"`
-	MAC         string             `json:"mac,omitempty"`
-	Serial      string             `json:"serial,omitempty"`
-	NumaNode    uint32             `json:"numaNode,omitempty"`
-	AlignedCPUs []uint32           `json:"alignedCPUs,omitempty"`
-	Tags        []string           `json:"tags"`
+	Type    DeviceMetadataType `json:"type"`
+	Bus     string             `json:"bus"`
+	Address string             `json:"address"`
+	MAC     string             `json:"mac,omitempty"`
+	Serial  string             `json:"serial,omitempty"`
+	Tags    []string           `json:"tags"`
 }
 
 // IsValidCloudInitData checks if the given CloudInitData object is valid in the sense that GenerateLocalData can be called with it.
@@ -112,23 +103,10 @@ func IsValidCloudInitData(cloudInitData *CloudInitData) bool {
 	return cloudInitData != nil && cloudInitData.UserData != "" && (cloudInitData.NoCloudMetaData != nil || cloudInitData.ConfigDriveMetaData != nil)
 }
 
-func cloudInitUUIDFromVMI(vmi *v1.VirtualMachineInstance) string {
-	if vmi.Spec.Domain.Firmware == nil {
-		return uuid.NewRandom().String()
-	}
-	return string(vmi.Spec.Domain.Firmware.UUID)
-}
-
 // ReadCloudInitVolumeDataSource scans the given VMI for CloudInit volumes and
 // reads their content into a CloudInitData struct. Does not resolve secret refs.
 func ReadCloudInitVolumeDataSource(vmi *v1.VirtualMachineInstance, secretSourceDir string) (cloudInitData *CloudInitData, err error) {
 	precond.MustNotBeNil(vmi)
-	// ClusterFlavorAnnotation will take precedence over a namespaced Flavor
-	// for setting instance_type in the metadata
-	flavor := vmi.Annotations[v1.ClusterFlavorAnnotation]
-	if flavor == "" {
-		flavor = vmi.Annotations[v1.FlavorAnnotation]
-	}
 
 	hostname := dns.SanitizeHostname(vmi)
 
@@ -140,7 +118,7 @@ func ReadCloudInitVolumeDataSource(vmi *v1.VirtualMachineInstance, secretSourceD
 			}
 
 			cloudInitData, err = readCloudInitNoCloudSource(volume.CloudInitNoCloud)
-			cloudInitData.NoCloudMetaData = readCloudInitNoCloudMetaData(hostname, cloudInitUUIDFromVMI(vmi), flavor)
+			cloudInitData.NoCloudMetaData = readCloudInitNoCloudMetaData(vmi.Name, hostname, vmi.Namespace)
 			cloudInitData.VolumeName = volume.Name
 			return cloudInitData, err
 		}
@@ -151,9 +129,8 @@ func ReadCloudInitVolumeDataSource(vmi *v1.VirtualMachineInstance, secretSourceD
 				return nil, err
 			}
 
-			uuid := cloudInitUUIDFromVMI(vmi)
 			cloudInitData, err = readCloudInitConfigDriveSource(volume.CloudInitConfigDrive)
-			cloudInitData.ConfigDriveMetaData = readCloudInitConfigDriveMetaData(vmi.Name, uuid, hostname, vmi.Namespace, keys, flavor)
+			cloudInitData.ConfigDriveMetaData = readCloudInitConfigDriveMetaData(string(vmi.UID), vmi.Name, hostname, vmi.Namespace, keys)
 			cloudInitData.VolumeName = volume.Name
 			return cloudInitData, err
 		}
@@ -376,18 +353,16 @@ func readCloudInitConfigDriveSource(source *v1.CloudInitConfigDriveSource) (*Clo
 	}, nil
 }
 
-func readCloudInitNoCloudMetaData(hostname, instanceId string, instanceType string) *NoCloudMetadata {
+func readCloudInitNoCloudMetaData(name, hostname, namespace string) *NoCloudMetadata {
 	return &NoCloudMetadata{
-		InstanceType:  instanceType,
-		InstanceID:    instanceId,
+		InstanceID:    fmt.Sprintf("%s.%s", name, namespace),
 		LocalHostname: hostname,
 	}
 }
 
-func readCloudInitConfigDriveMetaData(name, uuid, hostname, namespace string, keys map[string]string, instanceType string) *ConfigDriveMetadata {
+func readCloudInitConfigDriveMetaData(uid, name, hostname, namespace string, keys map[string]string) *ConfigDriveMetadata {
 	return &ConfigDriveMetadata{
-		InstanceType:  instanceType,
-		UUID:          uuid,
+		UUID:          uid,
 		InstanceID:    fmt.Sprintf("%s.%s", name, namespace),
 		Hostname:      hostname,
 		PublicSSHKeys: keys,
@@ -507,7 +482,7 @@ func GenerateEmptyIso(vmiName string, namespace string, data *CloudInitData, siz
 	default:
 		return fmt.Errorf("invalid cloud-init data source: '%v'", data.DataSource)
 	}
-	isoStaging = fmt.Sprintf(isoStagingFmt, iso)
+	isoStaging = fmt.Sprintf("%s.staging", iso)
 
 	err = diskutils.RemoveFilesIfExist(isoStaging)
 	if err != nil {
@@ -547,14 +522,14 @@ func GenerateEmptyIso(vmiName string, namespace string, data *CloudInitData, siz
 	return nil
 }
 
-func GenerateLocalData(vmi *v1.VirtualMachineInstance, instanceType string, data *CloudInitData) error {
-	precond.MustNotBeEmpty(vmi.Name)
+func GenerateLocalData(vmiName string, namespace string, data *CloudInitData) error {
+	precond.MustNotBeEmpty(vmiName)
 	precond.MustNotBeNil(data)
 
 	var metaData []byte
 	var err error
 
-	domainBasePath := getDomainBasePath(vmi.Name, vmi.Namespace)
+	domainBasePath := getDomainBasePath(vmiName, namespace)
 	dataBasePath := fmt.Sprintf("%s/data", domainBasePath)
 
 	var dataPath, metaFile, userFile, networkFile, iso, isoStaging string
@@ -564,14 +539,13 @@ func GenerateLocalData(vmi *v1.VirtualMachineInstance, instanceType string, data
 		metaFile = fmt.Sprintf("%s/%s", dataPath, "meta-data")
 		userFile = fmt.Sprintf("%s/%s", dataPath, "user-data")
 		networkFile = fmt.Sprintf("%s/%s", dataPath, "network-config")
-		iso = GetIsoFilePath(DataSourceNoCloud, vmi.Name, vmi.Namespace)
-		isoStaging = fmt.Sprintf(isoStagingFmt, iso)
+		iso = GetIsoFilePath(DataSourceNoCloud, vmiName, namespace)
+		isoStaging = fmt.Sprintf("%s.staging", iso)
 		if data.NoCloudMetaData == nil {
 			log.Log.V(2).Infof("No metadata found in cloud-init data. Create minimal metadata with instance-id.")
 			data.NoCloudMetaData = &NoCloudMetadata{
-				InstanceID: cloudInitUUIDFromVMI(vmi),
+				InstanceID: fmt.Sprintf("%s.%s", vmiName, namespace),
 			}
-			data.NoCloudMetaData.InstanceType = instanceType
 		}
 		metaData, err = json.Marshal(data.NoCloudMetaData)
 		if err != nil {
@@ -582,17 +556,15 @@ func GenerateLocalData(vmi *v1.VirtualMachineInstance, instanceType string, data
 		metaFile = fmt.Sprintf("%s/%s", dataPath, "meta_data.json")
 		userFile = fmt.Sprintf("%s/%s", dataPath, "user_data")
 		networkFile = fmt.Sprintf("%s/%s", dataPath, "network_data.json")
-		iso = GetIsoFilePath(DataSourceConfigDrive, vmi.Name, vmi.Namespace)
-		isoStaging = fmt.Sprintf(isoStagingFmt, iso)
+		iso = GetIsoFilePath(DataSourceConfigDrive, vmiName, namespace)
+		isoStaging = fmt.Sprintf("%s.staging", iso)
 		if data.ConfigDriveMetaData == nil {
 			log.Log.V(2).Infof("No metadata found in cloud-init data. Create minimal metadata with instance-id.")
-			instanceId := fmt.Sprintf("%s.%s", vmi.Name, vmi.Namespace)
 			data.ConfigDriveMetaData = &ConfigDriveMetadata{
-				InstanceID: instanceId,
-				UUID:       cloudInitUUIDFromVMI(vmi),
+				InstanceID: fmt.Sprintf("%s.%s", vmiName, namespace),
 			}
-			data.ConfigDriveMetaData.InstanceType = instanceType
 		}
+
 		data.ConfigDriveMetaData.Devices = data.DevicesData
 		metaData, err = json.Marshal(data.ConfigDriveMetaData)
 		if err != nil {
